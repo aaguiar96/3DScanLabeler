@@ -2,8 +2,8 @@
 <launch>
     <arg name="bag" default="/home/andre/Documents/rosbags/calibration_2020-03-12-10-0/calibration_2020-03-12-10-08-49_0.bag"/>
     <arg name="rate" default="1"/>
-    <arg name="bag_start" default="30"/>
-    <arg name="duration" default="3"/>
+    <arg name="bag_start" default="16"/>
+    <arg name="duration" default="20"/>
 
     <!-- rviz -->
     <node name="rviz" pkg="rviz" type="rviz" args="-d $(find scan_labeler)/config/calibration.rviz" required="false"/>

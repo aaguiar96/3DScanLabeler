@@ -10,6 +10,7 @@ project(scan_labeler)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
+  geometry_msgs
   std_msgs
 )
 

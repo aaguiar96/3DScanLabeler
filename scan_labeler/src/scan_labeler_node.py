@@ -3,23 +3,26 @@
 import rospy
 import std_msgs
 import sensor_msgs.point_cloud2 as pc2
-from sensor_msgs.msg import PointCloud2
+import ros_numpy
 import sys
-from scipy.spatial import distance
-import time
 import numpy as np
 import math
 import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
+from sensor_msgs.msg import PointCloud2
+from geometry_msgs.msg import PointStamped
+from scipy.spatial import distance
 
 class ScanLabeler:
     # Class constructor
     # - get topic names and bringup callback functions
     def __init__(self):
         # ROS subscribers and publishers
-        self.pcl_sub = rospy.Subscriber("/velodyne_points", PointCloud2, self.scanCallback)
-        self.pcl_pub = rospy.Publisher("/chessboard_points", PointCloud2, queue_size=1)
+        self.click_sub = rospy.Subscriber("/clicked_point", PointStamped, self.seedCallback)
+        self.pcl_sub   = rospy.Subscriber("/velodyne_points", PointCloud2, self.scanCallback)
+        self.pcl_pub   = rospy.Publisher("/chessboard_points", PointCloud2, queue_size=1)
+        self.seed_pub  = rospy.Publisher("/seed_point", PointCloud2, queue_size=1)
         
         # Plane fitting parameters
         self.A    = 0
@@ -32,40 +35,54 @@ class ScanLabeler:
         self.refD = 0
         self.n_inliers = 0
 
-        self.seed_point         = [1.78, 0.62, -0.36]
-        self.threshold          = 1.5
-        self.distance_threshold = 0.02
+        self.init               = 'true'
+        self.threshold          = 0.35
+        self.distance_threshold = 0.1
+
+    def seedCallback(self, data):
+        self.seed_point = np.array([[data.point.x, data.point.y, data.point.z]])
+        print(self.seed_point)
+        self.init       = 'false'
 
     # Callback function to read 3D scan measures
     def scanCallback(self, data):
-        # Extract 3D point from the LiDAR scan
-        pts = pc2.read_points(data, skip_nans = True, field_names = ("x", "y", "z"))
-        # Filter points by distance to the seed point (considering 1.5 meters)
-        pts_filtered = []
-        for p in pts:
-            m_pt = np.array(p)
-            if np.linalg.norm(p - np.array(self.seed_point)) < self.threshold:
-                pts_filtered.append(p)
+        # Check if seed point was already set
+        if self.init == 'true':
+            return
 
-        print(np.asarray(pts))
-        distance.cdist(np.array(pts), np.array(self.seed_point), metric='cityblock')
+        # Extract 3D point from the LiDAR scan
+        pc          = ros_numpy.numpify(data)
+        points      = np.zeros((pc.shape[0],3))
+        points[:,0] = pc['x']
+        points[:,1] = pc['y']
+        points[:,2] = pc['z']
+
+        # Extract the points close to the seed point from the entire PCL
+        dist = distance.cdist(self.seed_point, points, metric='euclidean')
+        vec  = points[np.transpose(dist < self.threshold)[:,0], :]
+
+        # Updata seed point with the average of cluster to use in the next 
+        # iteration
+        if(len(vec) > 0):
+            x_sum, y_sum, z_sum = 0, 0, 0
+            for i in range(0, len(vec)):
+                x_sum += vec[i,0]
+                y_sum += vec[i,1]
+                z_sum += vec[i,2]
+            self.seed_point[0,0] = x_sum / len(vec)
+            self.seed_point[0,1] = y_sum / len(vec)
+            self.seed_point[0,2] = z_sum / len(vec)
 
         # Call RANSAC
-        pts_filtered = np.asarray(pts_filtered)
-        inliers      = self.ransac(100, pts_filtered)
+        inliers = self.ransac(200, vec)
 
         # Publish plane point into a PCL2
-        cloud = pc2.create_cloud_xyz32(data.header, inliers)
+        cloud = pc2.create_cloud_xyz32(data.header, vec)
         self.pcl_pub.publish(cloud)
 
-        #fig = plt.figure()
-        #ax = fig.gca(projection='3d')
-        # plot original points
-        #ax.scatter(inliers[:, 0], inliers[:, 1], inliers[:, 2], color='g')
-        #ax.set_xlabel('x')
-        #ax.set_ylabel('y')
-        #ax.set_zlabel('z')
-        #plt.show()
+        # DEBUG - publish seed point
+        seed_cloud = pc2.create_cloud_xyz32(data.header, self.seed_point)
+        self.seed_pub.publish(seed_cloud)
 
     # Defines a plane using a set of points and least squares minimization
     def fitPlaneLTSQ(self, XYZ):
@@ -124,7 +141,7 @@ class ScanLabeler:
         # Extract the inliers 
         distances = abs((self.A * pts[:, 0] + self.B * pts[:, 1] + self.C * pts[:, 2] + self.D)) / \
                     (math.sqrt(self.A * self.A + self.B * self.B + self.C * self.C))
-        inliers = pts[np.where(distances < self.distance_threshold)]
+        inliers   = pts[np.where(distances < self.distance_threshold)]
 
         # Refine the plane model by fitting a plane to all inliers
         c, normal = self.fitPlaneLTSQ(inliers)
@@ -140,8 +157,8 @@ class ScanLabeler:
 
 def main(args):
     # Instantiate class and bringup ROS node
-    scan_handler = ScanLabeler()
     rospy.init_node("scan_labeler")
+    scan_handler = ScanLabeler()
 
     # ROS spin until user break it
     try:
