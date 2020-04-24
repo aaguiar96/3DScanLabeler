@@ -9,6 +9,11 @@ import numpy as np
 import math
 import random
 import matplotlib.pyplot as plt
+from geometry_msgs.msg import Point 
+from geometry_msgs.msg import Pose 
+from geometry_msgs.msg import Vector3, Quaternion 
+from std_msgs.msg import Header, ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PointStamped
@@ -23,6 +28,7 @@ class ScanLabeler:
         self.pcl_sub   = rospy.Subscriber("/velodyne_points", PointCloud2, self.scanCallback)
         self.pcl_pub   = rospy.Publisher("/chessboard_points", PointCloud2, queue_size=1)
         self.seed_pub  = rospy.Publisher("/seed_point", PointCloud2, queue_size=1)
+        self.marker_pub = rospy.Publisher('/plane', Marker, queue_size=0, latch=True)
         
         # Plane fitting parameters
         self.A    = 0
@@ -37,7 +43,7 @@ class ScanLabeler:
 
         self.init               = 'true'
         self.threshold          = 0.35
-        self.distance_threshold = 0.1
+        self.distance_threshold = 0.2
 
     def seedCallback(self, data):
         self.seed_point = np.array([[data.point.x, data.point.y, data.point.z]])
@@ -76,8 +82,46 @@ class ScanLabeler:
         # Call RANSAC
         inliers = self.ransac(200, vec)
 
+        # Calculate plane points
+        x1, x2, x3, x4 = 2, 2, 0, 0
+        y1, y2, y3, y4 = 1, -1, -1, 1
+        z1 = -(self.refA * x1 + self.refB * y1 + self.refD) / self.refC
+        z2 = -(self.refA * x2 + self.refB * y2 + self.refD) / self.refC
+        z3 = -(self.refA * x3 + self.refB * y3 + self.refD) / self.refC
+        z4 = -(self.refA * x4 + self.refB * y4 + self.refD) / self.refC
+
+        # Create line strips
+        m = Marker(ns='plane', id=0, frame_locked=True, header=data.header,
+            type=Marker.LINE_STRIP, action=Marker.ADD, lifetime=rospy.Duration(0),
+            pose=Pose(position=Point(x=0, y=0, z=0), orientation=Quaternion(x=0, y=0, z=0, w=1)),
+            scale=Vector3(x=0.03, y=0, z=0),
+            color=ColorRGBA(r=1, g=0, b=0, a=1.0))
+
+        p1 = Point()
+        p1.z = z1
+        p1.x = x1
+        p1.y = y1
+        m.points.append(p1)
+        p2 = Point()
+        p2.z = z2
+        p2.x = x2
+        p2.y = y2
+        m.points.append(p2)
+        p3 = Point()
+        p3.z = z3
+        p3.x = x3
+        p3.y = y3
+        m.points.append(p3)
+        p4 = Point()
+        p4.z = z4
+        p4.x = x4
+        p4.y = y4
+        m.points.append(p4)
+
+        self.marker_pub.publish(m)
+
         # Publish plane point into a PCL2
-        cloud = pc2.create_cloud_xyz32(data.header, vec)
+        cloud = pc2.create_cloud_xyz32(data.header, inliers)
         self.pcl_pub.publish(cloud)
 
         # DEBUG - publish seed point
